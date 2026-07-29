@@ -60,7 +60,12 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ─── Health ───────────────────────────────────────────────────
+# ─── Root & Health ─────────────────────────────────────────────
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "ShopFlowAI Scheduling API is running."}
+
+
 @app.get("/health", tags=["System"])
 def health():
     return {
