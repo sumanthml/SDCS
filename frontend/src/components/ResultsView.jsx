@@ -8,10 +8,13 @@ const ALGO_COLORS = { FCFS: 'var(--clr-info)', SPT: 'var(--clr-success)', Priori
 
 export default function ResultsView({ results, bestAlgorithm }) {
   const toast = useToast();
-  const [activeAlgo, setActiveAlgo] = useState(bestAlgorithm || Object.keys(results)[0]);
+  
+  const algos = results ? Object.keys(results) : [];
+  const initialAlgo = (bestAlgorithm && algos.includes(bestAlgorithm)) ? bestAlgorithm : algos[0];
+  const [activeAlgo, setActiveAlgo] = useState(initialAlgo);
   const [exporting, setExporting] = useState(false);
 
-  if (!results || Object.keys(results).length === 0) {
+  if (!results || algos.length === 0) {
     return (
       <div className="glass-card empty-state">
         <BarChart3 size={48} />
@@ -21,7 +24,9 @@ export default function ResultsView({ results, bestAlgorithm }) {
     );
   }
 
-  const active = results[activeAlgo];
+  // Ensure active exists, fallback to first key if not found
+  const active = results[activeAlgo] || results[algos[0]];
+  const safeBestAlgo = (bestAlgorithm && algos.includes(bestAlgorithm)) ? bestAlgorithm : algos[0];
 
   const handleExport = async () => {
     setExporting(true);
@@ -46,18 +51,16 @@ export default function ResultsView({ results, bestAlgorithm }) {
     toast('Full results exported as JSON.', 'success');
   };
 
-  const algos = Object.keys(results);
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-xl)' }}>
 
       {/* Best algorithm banner */}
-      <div className="glass-card" style={{ padding: 'var(--sp-lg)', borderColor: ALGO_COLORS[bestAlgorithm] || 'var(--clr-indigo)', background: `${ALGO_COLORS[bestAlgorithm] || 'var(--clr-indigo)'}14` }}>
+      <div className="glass-card" style={{ padding: 'var(--sp-lg)', borderColor: ALGO_COLORS[safeBestAlgo] || 'var(--clr-indigo)', background: `${ALGO_COLORS[safeBestAlgo] || 'var(--clr-indigo)'}14` }}>
         <div className="flex items-center gap-sm">
-          <Trophy size={22} style={{ color: ALGO_COLORS[bestAlgorithm] || 'var(--clr-indigo)' }} />
+          <Trophy size={22} style={{ color: ALGO_COLORS[safeBestAlgo] || 'var(--clr-indigo)' }} />
           <div>
-            <h4 style={{ color: ALGO_COLORS[bestAlgorithm] }}>Best Algorithm: {bestAlgorithm}</h4>
-            <p className="text-xs text-secondary">Lowest makespan: {results[bestAlgorithm]?.makespan} minutes</p>
+            <h4 style={{ color: ALGO_COLORS[safeBestAlgo] }}>Best Algorithm: {safeBestAlgo}</h4>
+            <p className="text-xs text-secondary">Lowest makespan: {results[safeBestAlgo]?.makespan} minutes</p>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--sp-sm)' }}>
             <button id="export-csv-btn" className="btn btn-secondary btn-sm" onClick={handleExport} disabled={exporting}>
@@ -76,7 +79,7 @@ export default function ResultsView({ results, bestAlgorithm }) {
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${algos.length}, 1fr)`, gap: 'var(--sp-sm)' }}>
           {algos.map(algo => {
             const res = results[algo];
-            const isBest = algo === bestAlgorithm;
+            const isBest = algo === safeBestAlgo;
             const color = ALGO_COLORS[algo] || 'var(--clr-indigo)';
             return (
               <button
