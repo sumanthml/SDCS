@@ -6,14 +6,14 @@ import CsvImporter from './CsvImporter';
 const STATUS_OPTIONS = ['Active', 'Maintenance', 'Offline'];
 
 const EMPTY_MACHINE = () => ({
-  machine_id: `M${Date.now()}`,
+  machine_id: crypto.randomUUID(),
   machine_code: '',
   name: '',
   status: 'Active',
   shift_hours: 8,
 });
 
-export default function MachineBuilder({ machines, onChange }) {
+export default function MachineBuilder({ machines, onChange, onSave }) {
   const toast = useToast();
   const [showImport, setShowImport] = useState(false);
 
@@ -30,11 +30,16 @@ export default function MachineBuilder({ machines, onChange }) {
     onChange(updated);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const invalid = machines.filter(m => !m.machine_code.trim() || !m.name.trim());
     if (invalid.length) return toast('All machines need a code and name.', 'error');
-    localStorage.setItem('shopflow_machines', JSON.stringify(machines));
-    toast(`${machines.length} machine(s) saved.`, 'success');
+    
+    if (onSave) {
+      await onSave(machines);
+    } else {
+      localStorage.setItem('shopflow_machines', JSON.stringify(machines));
+      toast(`${machines.length} machine(s) saved.`, 'success');
+    }
   };
 
   const statusColor = { Active: 'success', Maintenance: 'warning', Offline: 'danger' };

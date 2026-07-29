@@ -4,7 +4,7 @@ import { useToast } from '../context/ToastContext';
 
 const EMPTY_OP = (step) => ({ step_number: step, machine_id: '', machine_name: '', duration_mins: 30 });
 const EMPTY_JOB = () => ({
-  job_id: `JOB-${Date.now()}`,
+  job_id: crypto.randomUUID(),
   job_name: '',
   priority: 3,
   arrival_time: 0,
@@ -15,7 +15,7 @@ const EMPTY_JOB = () => ({
 const PRIORITY_LABELS = { 1: 'Low', 2: 'Below Normal', 3: 'Normal', 4: 'High', 5: 'Critical' };
 const PRIORITY_COLORS = { 1: 'badge-info', 2: 'badge-info', 3: 'badge-success', 4: 'badge-warning', 5: 'badge-danger' };
 
-export default function JobBuilder({ jobs, machines, onChange }) {
+export default function JobBuilder({ jobs, machines, onChange, onSave }) {
   const toast = useToast();
   const [expandedJob, setExpandedJob] = useState(null);
 
@@ -33,7 +33,7 @@ export default function JobBuilder({ jobs, machines, onChange }) {
   };
 
   const duplicateJob = (job) => {
-    const dup = { ...job, job_id: `JOB-${Date.now()}`, job_name: `${job.job_name} (copy)` };
+    const dup = { ...job, job_id: crypto.randomUUID(), job_name: `${job.job_name} (copy)` };
     onChange([...jobs, dup]);
     toast('Job duplicated', 'success');
   };
@@ -76,13 +76,18 @@ export default function JobBuilder({ jobs, machines, onChange }) {
     }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const invalid = jobs.filter(j => !j.job_name.trim() || !j.operations?.length);
     if (invalid.length) return toast('All jobs need a name and at least one operation.', 'error');
     const opsInvalid = jobs.some(j => j.operations?.some(op => !op.machine_id || !op.duration_mins));
     if (opsInvalid) return toast('All operations need a machine and duration.', 'error');
-    localStorage.setItem('shopflow_jobs', JSON.stringify(jobs));
-    toast(`${jobs.length} job(s) saved.`, 'success');
+    
+    if (onSave) {
+      await onSave(jobs);
+    } else {
+      localStorage.setItem('shopflow_jobs', JSON.stringify(jobs));
+      toast(`${jobs.length} job(s) saved.`, 'success');
+    }
   };
 
   return (
