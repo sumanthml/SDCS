@@ -467,27 +467,42 @@ function mapRowToProfile(row) {
 
 // ─── Supabase: Job Drops ──────────────────────────────────────────────────────
 export async function saveJobDropToSupabase(jobDrop) {
+  // Always save to localStorage immediately for 100% instant UI availability
   try {
-    const { error } = await supabase.from('job_drops').upsert({
-      id:               jobDrop.id,
-      company_name:     jobDrop.companyName,
-      logo:             jobDrop.logo || '🚀',
-      title:            jobDrop.title,
-      location:         jobDrop.location || 'Remote',
-      salary:           jobDrop.salary || 'Competitive',
-      req_xp:           jobDrop.reqXp || 0,
-      req_leetcode:     jobDrop.reqLeetCode || 0,
-      req_github_repos: jobDrop.reqGithubRepos || 0,
-      skills:           jobDrop.skills || [],
-      applicants_count: jobDrop.applicantsCount || 0,
-      status:           jobDrop.status || 'active',
-      recruiter_email:  jobDrop.recruiterEmail || '',
-      recruiter_name:   jobDrop.recruiterName || '',
-      company_name_hr:  jobDrop.companyName || '',
-      created_at:       jobDrop.createdAt || new Date().toISOString(),
-    }, { onConflict: 'id' });
-    if (error) console.warn('[Supabase] saveJobDrop:', error.message);
-  } catch (err) { console.warn('[Supabase] saveJobDrop:', err.message); }
+    const localDrops = JSON.parse(localStorage.getItem('devrank_job_drops') || '[]');
+    const filtered = localDrops.filter(j => j.id !== jobDrop.id);
+    localStorage.setItem('devrank_job_drops', JSON.stringify([jobDrop, ...filtered]));
+    window.dispatchEvent(new Event('storage'));
+  } catch (err) {}
+
+  // Non-blocking timeout wrapper for Supabase sync (max 2 seconds)
+  const supabasePromise = supabase.from('job_drops').upsert({
+    id:               jobDrop.id,
+    company_name:     jobDrop.companyName,
+    logo:             jobDrop.logo || '🚀',
+    title:            jobDrop.title,
+    location:         jobDrop.location || 'Remote',
+    salary:           jobDrop.salary || 'Competitive',
+    req_xp:           jobDrop.reqXp || 0,
+    req_leetcode:     jobDrop.reqLeetCode || 0,
+    req_github_repos: jobDrop.reqGithubRepos || 0,
+    skills:           jobDrop.skills || [],
+    applicants_count: jobDrop.applicantsCount || 0,
+    status:           jobDrop.status || 'active',
+    recruiter_email:  jobDrop.recruiterEmail || '',
+    recruiter_name:   jobDrop.recruiterName || '',
+    company_name_hr:  jobDrop.companyName || '',
+    created_at:       jobDrop.createdAt || new Date().toISOString(),
+  }, { onConflict: 'id' });
+
+  const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 2000));
+
+  try {
+    const res = await Promise.race([supabasePromise, timeoutPromise]);
+    if (res?.error) console.warn('[Supabase] saveJobDrop:', res.error.message);
+  } catch (err) {
+    console.warn('[Supabase] saveJobDrop error:', err.message);
+  }
 }
 
 export async function deleteJobDropFromSupabase(jobId) {

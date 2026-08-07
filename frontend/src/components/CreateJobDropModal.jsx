@@ -22,29 +22,32 @@ export default function CreateJobDropModal({ isOpen, onClose, onCreateDrop, soun
     e.preventDefault();
     if (!formData.companyName.trim() || !formData.title.trim()) return;
     setSaving(true);
-    const drop = {
-      id: `j_${Date.now()}`,
-      companyName: formData.companyName.trim(),
-      logo: '🚀',
-      title: formData.title.trim(),
-      location: formData.location.trim() || 'Remote',
-      salary: formData.salary.trim() || 'Competitive',
-      reqXp: Number(formData.reqXp) || 0,
-      reqLeetCode: Number(formData.reqLeetCode) || 0,
-      reqGithubRepos: Number(formData.reqGithubRepos) || 0,
-      skills: formData.skills.split(',').map(s => s.trim()).filter(Boolean),
-      applicantsCount: 0,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    };
-    // Save to Supabase — realtime subscription auto-updates student dashboards
-    await saveJobDropToSupabase(drop);
-    playSound('success', soundEnabled);
-    onCreateDrop(drop);
-    setSaving(false);
-    // Reset form
-    setFormData({ companyName: '', title: '', salary: '', location: '', reqXp: 100, reqLeetCode: 0, reqGithubRepos: 0, skills: '' });
-    onClose();
+    try {
+      const drop = {
+        id: `j_${Date.now()}`,
+        companyName: formData.companyName.trim(),
+        logo: '🚀',
+        title: formData.title.trim(),
+        location: formData.location.trim() || 'Remote',
+        salary: formData.salary.trim() || 'Competitive',
+        reqXp: Number(formData.reqXp) || 0,
+        reqLeetCode: Number(formData.reqLeetCode) || 0,
+        reqGithubRepos: Number(formData.reqGithubRepos) || 0,
+        skills: formData.skills.split(',').map(s => s.trim()).filter(Boolean),
+        applicantsCount: 0,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      };
+      await saveJobDropToSupabase(drop);
+      playSound('success', soundEnabled);
+      if (onCreateDrop) onCreateDrop(drop);
+      setFormData({ companyName: '', title: '', salary: '', location: '', reqXp: 100, reqLeetCode: 0, reqGithubRepos: 0, skills: '' });
+      onClose();
+    } catch (err) {
+      console.error('Failed to save job drop:', err);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
