@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: devrank-platform
+    env: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        value: https://qzotpqktoljhjaybqwqz.supabase.co
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: VITE_GEMINI_API_KEY
+        sync: false
+      - key: VITE_GROQ_API_KEY
+        sync: false
