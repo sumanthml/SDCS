@@ -1,384 +1,360 @@
-import { useState, useEffect, useCallback } from 'react';
-import { api } from './api';
-import './index.css';
-import './firebaseClient.js';
-
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { ToastProvider, useToast } from './context/ToastContext';
-import { supabase, isSupabaseEnabled } from './supabaseClient';
-
-import AuthPage       from './components/AuthPage';
-import Layout         from './components/Layout';
-import Dashboard      from './components/Dashboard';
-import MachineBuilder from './components/MachineBuilder';
-import JobBuilder     from './components/JobBuilder';
-import SimulationPanel from './components/SimulationPanel';
-import ResultsView    from './components/ResultsView';
-import AiAnalystPanel from './components/AiAnalystPanel';
-import DisruptionPanel from './components/DisruptionPanel';
-import AnalyticsPage  from './components/AnalyticsPage';
-import HistoryPage    from './components/HistoryPage';
-
-// ─── localStorage helpers ─────────────────────────────────────
-const persist  = (key, val)  => { try { localStorage.setItem(`shopflow_${key}`, JSON.stringify(val)); } catch (_) {} };
-const retrieve = (key, def)  => { try { return JSON.parse(localStorage.getItem(`shopflow_${key}`)) ?? def; } catch { return def; } };
-
-// ─── Backend health polling ───────────────────────────────────
-function useBackendHealth() {
-  const [online, setOnline] = useState(false);
-  const check = useCallback(async () => {
-    try { await api.health(); setOnline(true); } catch { setOnline(false); }
-  }, []);
-
-  useEffect(() => {
-    check();
-    const id = setInterval(check, 15_000);
-    return () => clearInterval(id);
-  }, [check]);
-
-  return online;
-}
-
-// ─── App content ─────────────────────────────────────────────
-function AppContent() {
-  const { user, loading, profile } = useAuth();
-  const toast = useToast();
-  const backendOnline = useBackendHealth();
-  const [page, setPage] = useState('dashboard');
-
-  // Core application state
-  const [machines, setMachines]         = useState(() => retrieve('machines', []));
-  const [jobs, setJobs]                 = useState(() => retrieve('jobs', []));
-  const [disruptions, setDisruptions]   = useState({ downtime_events: [], emergency_jobs: [] });
-  const [simResults, setSimResults]     = useState(() => retrieve('last_results', null));
-  const [bestAlgorithm, setBestAlgo]    = useState(() => retrieve('best_algo', null));
-
-  // Sync state with cloud when user logs in
-  useEffect(() => {
-    if (!user) {
-      setMachines(retrieve('machines', []));
-      setJobs(retrieve('jobs', []));
-      return;
-    }
-
-    if (!isSupabaseEnabled) return;
-
-    const loadUserData = async () => {
-      try {
-        // 1. Fetch machines
-        const { data: dbMachines, error: mErr } = await supabase
-          .from('machines')
-          .select('*')
-          .eq('user_id', user.id);
-        if (mErr) throw mErr;
-
-        const mappedMachines = (dbMachines || []).map(m => ({
-          machine_id: m.id,
-          machine_code: m.machine_code,
-          name: m.name,
-          status: m.status,
-          shift_hours: m.shift_hours
-        }));
-
-        // 2. Fetch jobs
-        const { data: dbJobs, error: jErr } = await supabase
-          .from('jobs')
-          .select('*')
-          .eq('user_id', user.id);
-        if (jErr) throw jErr;
-
-        // 3. Fetch operations
-        const jobIds = (dbJobs || []).map(j => j.id);
-        let mappedJobs = [];
-
-        if (jobIds.length > 0) {
-          const { data: dbOps, error: oErr } = await supabase
-            .from('job_operations')
-            .select('*')
-            .in('job_id', jobIds);
-          if (oErr) throw oErr;
-
-          mappedJobs = (dbJobs || []).map(j => {
-            const ops = (dbOps || [])
-              .filter(op => op.job_id === j.id)
-              .map(op => {
-                const mach = mappedMachines.find(m => m.machine_id === op.machine_id);
-                return {
-                  step_number: op.step_number,
-                  machine_id: op.machine_id,
-                  machine_name: mach ? mach.name : '',
-                  duration_mins: op.duration_mins
-                };
-              })
-              .sort((a, b) => a.step_number - b.step_number);
-
-            return {
-              job_id: j.id,
-              job_name: j.job_name,
-              priority: j.priority,
-              arrival_time: j.arrival_time,
-              due_date: j.due_date,
-              operations: ops
-            };
-          });
-        }
-
-        setMachines(mappedMachines);
-        setJobs(mappedJobs);
-        persist('machines', mappedMachines);
-        persist('jobs', mappedJobs);
-      } catch (e) {
-        console.warn('[Supabase Sync Load] Failed:', e.message);
-      }
-    };
-
-    loadUserData();
-  }, [user]);
-
-  // Auto-persist local changes
-  useEffect(() => persist('last_results', simResults), [simResults]);
-  useEffect(() => persist('best_algo', bestAlgorithm), [bestAlgorithm]);
-
-  // Cloud Save for Machines
-  const saveMachines = async (updatedMachines) => {
-    if (!user) return;
-    if (!isSupabaseEnabled) {
-      setMachines(updatedMachines);
-      persist('machines', updatedMachines);
-      toast('Saved locally (Offline mode)', 'success');
-      return;
-    }
-
-    try {
-      const dbRows = updatedMachines.map(m => {
-        const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(m.machine_id);
-        const id = isValidUuid ? m.machine_id : crypto.randomUUID();
-        return {
-          id,
-          user_id: user.id,
-          machine_code: m.machine_code,
-          name: m.name,
-          status: m.status,
-          shift_hours: m.shift_hours
-        };
-      });
-
-      const localIds = dbRows.map(r => r.id);
-
-      // 1. Delete removed machines
-      if (localIds.length > 0) {
-        await supabase
-          .from('machines')
-          .delete()
-          .eq('user_id', user.id)
-          .not('id', 'in', `(${localIds.map(x => `'${x}'`).join(',')})`);
-      } else {
-        await supabase
-          .from('machines')
-          .delete()
-          .eq('user_id', user.id);
-      }
-
-      // 2. Upsert machines
-      if (dbRows.length > 0) {
-        const { error } = await supabase
-          .from('machines')
-          .upsert(dbRows, { onConflict: 'id' });
-        if (error) throw error;
-      }
-
-      const newLocalMachines = updatedMachines.map((m, idx) => ({
-        ...m,
-        machine_id: dbRows[idx].id
-      }));
-
-      setMachines(newLocalMachines);
-      persist('machines', newLocalMachines);
-      toast('Fleet status synchronized with cloud!', 'success');
-    } catch (e) {
-      toast(`Cloud save failed: ${e.message}`, 'error');
-    }
-  };
-
-  // Cloud Save for Jobs
-  const saveJobs = async (updatedJobs) => {
-    if (!user) return;
-    if (!isSupabaseEnabled) {
-      setJobs(updatedJobs);
-      persist('jobs', updatedJobs);
-      toast('Saved locally (Offline mode)', 'success');
-      return;
-    }
-
-    try {
-      const dbJobs = updatedJobs.map(j => {
-        const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(j.job_id);
-        const id = isValidUuid ? j.job_id : crypto.randomUUID();
-        return {
-          id,
-          user_id: user.id,
-          job_name: j.job_name,
-          priority: j.priority,
-          arrival_time: j.arrival_time,
-          due_date: j.due_date || null
-        };
-      });
-
-      const localJobIds = dbJobs.map(r => r.id);
-
-      // 1. Delete removed jobs
-      if (localJobIds.length > 0) {
-        await supabase
-          .from('jobs')
-          .delete()
-          .eq('user_id', user.id)
-          .not('id', 'in', `(${localJobIds.map(x => `'${x}'`).join(',')})`);
-      } else {
-        await supabase
-          .from('jobs')
-          .delete()
-          .eq('user_id', user.id);
-      }
-
-      // 2. Upsert jobs
-      if (dbJobs.length > 0) {
-        const { error: jErr } = await supabase
-          .from('jobs')
-          .upsert(dbJobs, { onConflict: 'id' });
-        if (jErr) throw jErr;
-
-        // 3. Clear existing operations for these jobs to rebuild
-        await supabase
-          .from('job_operations')
-          .delete()
-          .in('job_id', localJobIds);
-
-        // 4. Build operation rows
-        const dbOps = [];
-        updatedJobs.forEach((j, idx) => {
-          const jobId = dbJobs[idx].id;
-          (j.operations || []).forEach(op => {
-            dbOps.push({
-              job_id: jobId,
-              machine_id: op.machine_id,
-              step_number: op.step_number,
-              duration_mins: op.duration_mins
-            });
-          });
-        });
-
-        // 5. Insert operations
-        if (dbOps.length > 0) {
-          const { error: oErr } = await supabase
-            .from('job_operations')
-            .insert(dbOps);
-          if (oErr) throw oErr;
-        }
-      }
-
-      const newLocalJobs = updatedJobs.map((j, idx) => ({
-        ...j,
-        job_id: dbJobs[idx].id
-      }));
-
-      setJobs(newLocalJobs);
-      persist('jobs', newLocalJobs);
-      toast('Jobs synchronized with cloud!', 'success');
-    } catch (e) {
-      toast(`Cloud save failed: ${e.message}`, 'error');
-    }
-  };
-
-  const handleResults = useCallback((data) => {
-    setSimResults(data.results);
-    setBestAlgo(data.best_algorithm);
-    setPage('results');
-  }, []);
-
-  // ── Loading screen
-  if (loading) return (
-    <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
-      <div className="sidebar-logo-icon" style={{ width: 52, height: 52 }}>
-        <span style={{ fontSize: '1.4rem' }}>🏭</span>
-      </div>
-      <span className="spinner" style={{ width: 36, height: 36, borderWidth: 3 }} />
-      <p className="text-secondary text-sm">Loading ShopFlowAI…</p>
-    </div>
-  );
-
-  if (!user) return <AuthPage />;
-
-  const renderPage = () => {
-    const isManager = profile?.role === 'Manager';
-    switch (page) {
-      case 'dashboard':
-        return (
-          <Dashboard
-            machines={machines} jobs={jobs} simResults={simResults}
-            backendOnline={backendOnline} isManager={isManager}
-            onNavigate={setPage}
-          />
-        );
-      case 'machines':
-        return <MachineBuilder machines={machines} onChange={setMachines} onSave={saveMachines} />;
-
-      case 'jobs':
-        return <JobBuilder jobs={jobs} machines={machines} onChange={setJobs} onSave={saveJobs} />;
-
-      case 'simulate':
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-xl)' }}>
-            <SimulationPanel
-              machines={machines} jobs={jobs} disruptions={disruptions}
-              backendOnline={backendOnline} onResults={handleResults}
-            />
-            <div className="glass-card" style={{ padding: 'var(--sp-lg)' }}>
-              <h4 style={{ marginBottom: 'var(--sp-md)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                ⚡ What-If Disruption Scenarios
-                <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>Optional</span>
-              </h4>
-              <DisruptionPanel machines={machines} disruptions={disruptions} onChange={setDisruptions} />
-            </div>
-          </div>
-        );
-
-      case 'results':
-        return (
-          <ResultsView
-            results={simResults} bestAlgorithm={bestAlgorithm}
-            onNavigate={setPage}
-          />
-        );
-
-      case 'ai':
-        return <AiAnalystPanel results={simResults} bestAlgorithm={bestAlgorithm} backendOnline={backendOnline} />;
-
-      case 'analytics':
-        return isManager ? <AnalyticsPage /> : <Dashboard machines={machines} jobs={jobs} simResults={simResults} backendOnline={backendOnline} isManager={false} onNavigate={setPage} />;
-
-      case 'history':
-        return <HistoryPage />;
-
-      default:
-        return <Dashboard machines={machines} jobs={jobs} simResults={simResults} backendOnline={backendOnline} isManager={isManager} onNavigate={setPage} />;
-    }
-  };
-
-  return (
-    <Layout activePage={page} onNavigate={setPage} backendOnline={backendOnline}>
-      <div className="animate-in" key={page}>
-        {renderPage()}
-      </div>
-    </Layout>
-  );
-}
+import React, { useState, useEffect, useRef } from 'react';
+import Navbar from './components/Navbar';
+import LandingAuthPage from './components/LandingAuthPage';
+import CandidateDashboard from './components/CandidateDashboard';
+import RecruiterDashboard from './components/RecruiterDashboard';
+import LeaderboardPage from './components/LeaderboardPage';
+import StudentProfileModal from './components/StudentProfileModal';
+import ChallengeRequestModal from './components/ChallengeRequestModal';
+import AdminPanel from './components/AdminPanel';
+import Toast from './components/Toast';
+import {
+  fetchLiveGitHubStats,
+  fetchLiveLeetCodeStats,
+  fetchGitHubContributions,
+  calculateDevRankProfile,
+  extractStructuredProfile,
+  computeResumeXpFromScore,
+  computeGitHubXp,
+  computeLeetCodeXp,
+  computeResumeXp,
+  computeTotalXp,
+  saveProfileToSupabase,
+  subscribeToJobDrops,
+  subscribeToLeaderboard,
+  subscribeToChallenges,
+  subscribeToBattleMatches,
+} from './services/api';
+import { ShieldCheck } from 'lucide-react';
 
 export default function App() {
+  const [sessionState, setSessionState] = useState(null); // null | 'candidate' | 'recruiter' | 'admin'
+  const [viewPage, setViewPage] = useState('dashboard');
+  const [candidates, setCandidates] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [recruiterUser, setRecruiterUser] = useState(null);
+  const [jobDrops, setJobDrops] = useState([]);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [challengeOpponent, setChallengeOpponent] = useState(null);
+  const [liveBattles, setLiveBattles] = useState([]);
+  const [toast, setToast] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(true);
+
+  const handleAddLiveBattle = (battle) => {
+    setLiveBattles(prev => [battle, ...prev]);
+  };
+
+  // Store Supabase unsubscribe refs
+  const unsubJobDrops = useRef(null);
+  const unsubLeaderboard = useRef(null);
+  const unsubBattles = useRef(null);
+
+  const showToast = (message, type = 'error') => setToast({ message, type });
+
+  // ── On mount: subscribe to Supabase real-time channels ──────────────────────
+  useEffect(() => {
+    setIsInitializing(true);
+
+    // Real-time job drops from Supabase
+    unsubJobDrops.current = subscribeToJobDrops((drops) => {
+      setJobDrops(drops);
+    });
+
+    // Real-time leaderboard from Supabase
+    unsubLeaderboard.current = subscribeToLeaderboard((cands) => {
+      setCandidates(cands);
+      setIsInitializing(false);
+    });
+
+    // Real-time 1v1 battle matches from Supabase & Dual Storage
+    unsubBattles.current = subscribeToBattleMatches((battles) => {
+      const formatted = (battles || []).map(b => ({
+        id: b.id,
+        p1: b.challenger_username,
+        p1Gh: b.challenger_username,
+        p2: b.opponent_username,
+        p2Gh: b.opponent_username,
+        title: b.title || '1v1 Speed Duel',
+        difficulty: b.status === 'completed' ? `🏆 Winner: @${b.winner_username}` : b.status === 'approved_active' ? 'Admin Assigned Code' : 'Awaiting Admin Approval',
+        status: b.status === 'completed' ? 'COMPLETED 🏆' : b.status === 'approved_active' ? 'LIVE 🔴' : '⏳ PENDING APPROVAL',
+        winner: b.winner_username,
+        time: new Date(b.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        problemStatement: b.problem_statement,
+        starterCode: b.starter_code
+      }));
+      setLiveBattles(formatted);
+    });
+
+    // Failsafe: stop spinner after 4s even if Supabase is slow
+    const timer = setTimeout(() => setIsInitializing(false), 4000);
+
+    return () => {
+      if (unsubJobDrops.current) unsubJobDrops.current();
+      if (unsubLeaderboard.current) unsubLeaderboard.current();
+      if (unsubBattles.current) unsubBattles.current();
+      clearTimeout(timer);
+    };
+  }, []);
+
+  // ── Student login callback (from LandingAuthPage after full API verification) ─
+  const handleStudentLogin = (fullProfile) => {
+    setCandidates(prev => {
+      const filtered = prev.filter(c => c.githubUsername !== fullProfile.githubUsername);
+      return [fullProfile, ...filtered];
+    });
+    setCurrentUser(fullProfile);
+    setSessionState('candidate');
+    setViewPage('dashboard');
+    showToast(`Welcome ${fullProfile.name}! DevRank Score: ${fullProfile.totalXp} / 500 XP`, 'success');
+  };
+
+  // ── Recruiter login ────────────────────────────────────────────────────────
+  const handleRecruiterLogin = (recruiterDetails) => {
+    setRecruiterUser(recruiterDetails);
+    setSessionState('recruiter');
+    setViewPage('dashboard');
+    showToast(`Welcome ${recruiterDetails.recruiterName} at ${recruiterDetails.companyName}!`, 'success');
+  };
+
+  // ── Profile edit save (from StudentProfileModal) ───────────────────────────
+  const handleSaveProfileEdit = async (formData) => {
+    // Step 1: verify GitHub + fetch contributions
+    const [ghStats, contribs] = await Promise.all([
+      fetchLiveGitHubStats(formData.githubUsername),
+      fetchGitHubContributions(formData.githubUsername),
+    ]);
+    if (ghStats.error) {
+      showToast(ghStats.error, 'error');
+      return { error: ghStats.error };
+    }
+
+    // Step 2: verify LeetCode (optional)
+    let lcStats = { easy: 0, medium: 0, hard: 0, total: 0, contestRating: 0, error: null };
+    if (formData.leetcodeUsername) {
+      lcStats = await fetchLiveLeetCodeStats(formData.leetcodeUsername);
+    }
+
+    // Step 3: Build profile
+    const base = calculateDevRankProfile({
+      name: formData.name || ghStats.name,
+      email: formData.email || currentUser?.email || '',
+      targetRole: formData.targetRole,
+      githubUsername: formData.githubUsername,
+      leetcodeUsername: formData.leetcodeUsername,
+      linkedinUrl: formData.linkedinUrl,
+      bio: formData.bio || ghStats.bio,
+      pdfText: formData.pdfText,
+    });
+
+    // Step 4: Compute XP math
+    const githubXp = computeGitHubXp(ghStats, contribs);
+    const leetcodeXp = computeLeetCodeXp(lcStats);
+
+    let resumeXp = currentUser?.resumeXp || 0;
+    let atsScore = currentUser?.atsScore || 0;
+    let extractedProfile = currentUser?.extractedProfile || {};
+    let skills = currentUser?.skills || base.skills || [];
+
+    if (formData.pdfText?.trim()) {
+      showToast('Gemini AI analyzing resume ATS score...', 'info');
+      const geminiResult = await extractStructuredProfile(formData.pdfText, formData.targetRole || 'Software Engineer');
+      if (geminiResult) {
+        atsScore = geminiResult.ats_score || 0;
+        resumeXp = computeResumeXpFromScore(atsScore);
+        extractedProfile = geminiResult;
+        skills = geminiResult.skills || skills;
+      } else {
+        resumeXp = computeResumeXp(formData.pdfText, formData.targetRole + ' ' + formData.bio);
+      }
+    }
+
+    const totalXp = computeTotalXp(resumeXp, githubXp, leetcodeXp, currentUser?.interviewXp || 0, currentUser?.challengeXp || 0);
+
+    const fullProfile = {
+      ...base,
+      avatar: ghStats.avatar || currentUser?.avatar || null,
+      name: formData.name || ghStats.name,
+      bio: formData.bio || ghStats.bio || '',
+      githubXp,
+      leetcodeXp,
+      resumeXp,
+      totalXp,
+      atsScore,
+      extractedProfile,
+      skills,
+      githubStats: ghStats,
+      leetcodeStats: lcStats,
+      contributionsData: contribs || {},
+    };
+
+    // Step 5: Save to Supabase
+    saveProfileToSupabase(fullProfile);
+
+    setCurrentUser(fullProfile);
+    setCandidates(prev => {
+      const filtered = prev.filter(c => c.githubUsername !== fullProfile.githubUsername);
+      return [fullProfile, ...filtered];
+    });
+
+    showToast(`Profile updated! DevRank XP: ${totalXp}`, 'success');
+    return { success: true };
+  };
+
+  const handleDeleteAccount = () => {
+    if (currentUser?.githubUsername) {
+      setCandidates(prev => prev.filter(c => c.githubUsername !== currentUser.githubUsername));
+    }
+    setCurrentUser(null);
+    setSessionState(null);
+    setViewPage('dashboard');
+    showToast('Your account and profile data have been permanently erased.', 'info');
+  };
+
+  // ── Admin login ───────────────────────────────────────────────────────────
+  const handleAdminLogin = () => {
+    setSessionState('admin');
+  };
+
+  // ── Job Drops managed by RecruiterDashboard directly via Firebase ──────────
+  // RecruiterDashboard calls saveJobDropToFirebase → Firestore → subscribeToJobDrops updates setJobDrops
+
+  // ── Logout ─────────────────────────────────────────────────────────────────
+  const handleLogout = () => {
+    setSessionState(null);
+    setCurrentUser(null);
+    setRecruiterUser(null);
+    setViewPage('dashboard');
+  };
+
+  // ── Loading splash ─────────────────────────────────────────────────────────
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#080c14] flex flex-col items-center justify-center text-slate-100 font-sans">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 shadow-xl shadow-cyan-500/30 animate-pulse">
+          <ShieldCheck className="h-8 w-8 text-white" />
+        </div>
+        <div className="mt-5 text-sm font-bold tracking-wide text-cyan-400">Connecting to Supabase Cloud...</div>
+        <div className="mt-2 text-xs text-slate-500">Loading real-time data from Supabase</div>
+      </div>
+    );
+  }
+
+  // ── Admin Panel ───────────────────────────────────────────────────────────
+  if (sessionState === 'admin') {
+    return (
+      <>
+        <AdminPanel onLogout={handleLogout} onAddLiveBattle={handleAddLiveBattle} showToast={showToast} />
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      </>
+    );
+  }
+
+  // ── Landing page (not logged in) ──────────────────────────────────────────
+  if (sessionState === null) {
+    return (
+      <>
+        <LandingAuthPage
+          onStudentLogin={handleStudentLogin}
+          onRecruiterLogin={handleRecruiterLogin}
+          onAdminLogin={handleAdminLogin}
+          soundEnabled={soundEnabled}
+        />
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      </>
+    );
+  }
+
+  // ── Main App (logged in) ───────────────────────────────────────────────────
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <AppContent />
-      </ToastProvider>
-    </AuthProvider>
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-indigo-500 selection:text-white font-sans">
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+      <Navbar
+        activeRole={sessionState}
+        currentUser={currentUser}
+        recruiterUser={recruiterUser}
+        onViewLeaderboard={() => setViewPage(v => v === 'leaderboard' ? 'dashboard' : 'leaderboard')}
+        onLogout={handleLogout}
+        soundEnabled={soundEnabled}
+        setSoundEnabled={setSoundEnabled}
+      />
+
+      <main className="flex-1">
+        {viewPage === 'leaderboard' ? (
+          <LeaderboardPage
+            candidates={candidates}
+            currentUser={currentUser}
+            liveBattles={liveBattles}
+            onBack={() => setViewPage('dashboard')}
+            onChallengeCandidate={(candidate) => {
+              setChallengeOpponent(candidate);
+            }}
+            soundEnabled={soundEnabled}
+          />
+        ) : sessionState === 'candidate' ? (
+          <CandidateDashboard
+            currentUser={currentUser}
+            setCurrentUser={setCurrentUser}
+            candidates={candidates}
+            jobDrops={jobDrops}
+            liveBattles={liveBattles}
+            soundEnabled={soundEnabled}
+            onOpenProfileModal={() => setProfileModalOpen(true)}
+            onDeleteAccount={handleDeleteAccount}
+            showToast={showToast}
+          />
+        ) : (
+          <RecruiterDashboard
+            candidates={candidates}
+            jobDrops={jobDrops}
+            setJobDrops={setJobDrops}
+            liveBattles={liveBattles}
+            soundEnabled={soundEnabled}
+            showToast={showToast}
+          />
+        )}
+      </main>
+
+      <StudentProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        onSaveProfile={handleSaveProfileEdit}
+        currentUser={currentUser}
+        soundEnabled={soundEnabled}
+        showToast={showToast}
+      />
+
+      <ChallengeRequestModal
+        isOpen={Boolean(challengeOpponent)}
+        onClose={() => setChallengeOpponent(null)}
+        currentUser={currentUser}
+        opponent={challengeOpponent}
+        onAddLiveBattle={handleAddLiveBattle}
+        onStartBattle={(opp) => {
+          setChallengeOpponent(null);
+          setViewPage('dashboard');
+          if (showToast) showToast(`1v1 Battle accepted by @${opp.githubUsername}! Entering Arena...`, 'success');
+        }}
+        soundEnabled={soundEnabled}
+      />
+
+      <footer className="border-t border-slate-800/80 bg-slate-950/80 py-5 text-center text-xs text-slate-400 font-sans">
+        <div className="mx-auto max-w-7xl px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center space-x-2">
+            <ShieldCheck className="h-4 w-4 text-cyan-400" />
+            <span className="font-bold text-slate-300">DevRank Platform</span>
+            <span>· Verified Developer Sourcing & Gamified Recruitment</span>
+          </div>
+          <div className="flex items-center space-x-3 text-slate-500">
+            <span>GitHub REST API</span><span>·</span>
+            <span>LeetCode API</span><span>·</span>
+            <span>Google Gemini AI</span><span>·</span>
+            <span>Supabase Realtime</span>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }

@@ -1,150 +1,154 @@
--- ============================================================
--- Intelligent Smart Manufacturing Job Scheduling Simulator
--- Supabase PostgreSQL Schema
--- Run this entire script in the Supabase SQL Editor
--- ============================================================
+-- DevRank Supabase Schema — Run this ENTIRE script in Supabase SQL Editor
+-- Project: qzotpqktoljhjaybqwqz
 
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- Enable UUID Extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 1. USERS TABLE (extends Supabase auth.users via trigger)
-CREATE TABLE IF NOT EXISTS public.users (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    full_name VARCHAR(255),
-    role VARCHAR(50) DEFAULT 'Planner' CHECK (role IN ('Planner', 'Manager')),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 1. Candidates Table (unified — no fake sample data)
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS candidates (
+    github_username   TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    email             TEXT,
+    target_role       TEXT DEFAULT 'Software Engineer',
+    bio               TEXT DEFAULT '',
+    linkedin_url      TEXT DEFAULT '',
+    leetcode_username TEXT DEFAULT '',
+    avatar            TEXT,
+    -- XP breakdown
+    total_xp          INT DEFAULT 0,
+    github_xp         INT DEFAULT 0,
+    leetcode_xp       INT DEFAULT 0,
+    resume_xp         INT DEFAULT 0,
+    interview_xp      INT DEFAULT 0,
+    challenge_xp      INT DEFAULT 0,
+    -- Live stats (JSONB)
+    github_stats      JSONB DEFAULT '{}',
+    leetcode_stats    JSONB DEFAULT '{}',
+    skills            JSONB DEFAULT '[]',
+    badges            JSONB DEFAULT '[]',
+    applied_jobs      JSONB DEFAULT '[]',
+    created_at        TIMESTAMPTZ DEFAULT now(),
+    updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. MACHINES TABLE
-CREATE TABLE IF NOT EXISTS public.machines (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
-    machine_code VARCHAR(50) NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    status VARCHAR(50) DEFAULT 'Active' CHECK (status IN ('Active', 'Maintenance', 'Offline')),
-    shift_hours FLOAT DEFAULT 8.0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT unique_machine_code_per_user UNIQUE(user_id, machine_code)
+-- Enable RLS (Row Level Security) but allow all reads/writes for now
+ALTER TABLE candidates ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public candidates read" ON candidates FOR SELECT USING (true);
+CREATE POLICY "Public candidates write" ON candidates FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public candidates update" ON candidates FOR UPDATE USING (true);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 2. Job Drops Table
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS job_drops (
+    id              TEXT PRIMARY KEY,
+    company_name    TEXT NOT NULL,
+    logo            TEXT DEFAULT '🚀',
+    title           TEXT NOT NULL,
+    location        TEXT DEFAULT 'Remote',
+    salary          TEXT DEFAULT 'Competitive',
+    req_xp          INT DEFAULT 100,
+    req_leetcode    INT DEFAULT 0,
+    req_github_repos INT DEFAULT 0,
+    skills          JSONB DEFAULT '[]',
+    applicants_count INT DEFAULT 0,
+    status          TEXT DEFAULT 'active',
+    recruiter_email TEXT,
+    recruiter_name  TEXT,
+    company_name_hr TEXT,
+    created_at      TIMESTAMPTZ DEFAULT now()
 );
 
--- 3. JOBS TABLE
-CREATE TABLE IF NOT EXISTS public.jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
-    job_name VARCHAR(100) NOT NULL,
-    priority INT DEFAULT 1 CHECK (priority BETWEEN 1 AND 5),
-    arrival_time FLOAT DEFAULT 0.0,
-    due_date FLOAT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+ALTER TABLE job_drops ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public job_drops read" ON job_drops FOR SELECT USING (true);
+CREATE POLICY "Public job_drops write" ON job_drops FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public job_drops update" ON job_drops FOR UPDATE USING (true);
+CREATE POLICY "Public job_drops delete" ON job_drops FOR DELETE USING (true);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 3. Admin Challenges Table (admin creates, students complete)
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS challenges (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    difficulty          TEXT CHECK (difficulty IN ('easy', 'medium', 'hard')) DEFAULT 'easy',
+    time_limit_seconds  INT DEFAULT 300,
+    xp_reward           INT DEFAULT 5,
+    tags                TEXT[] DEFAULT '{}',
+    is_active           BOOLEAN DEFAULT true,
+    created_by_email    TEXT DEFAULT 'admin@devrank.io',
+    created_at          TIMESTAMPTZ DEFAULT now()
 );
 
--- 4. JOB OPERATIONS TABLE
-CREATE TABLE IF NOT EXISTS public.job_operations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id UUID REFERENCES public.jobs(id) ON DELETE CASCADE NOT NULL,
-    machine_id UUID REFERENCES public.machines(id) ON DELETE CASCADE NOT NULL,
-    step_number INT NOT NULL,
-    duration_mins FLOAT NOT NULL CHECK (duration_mins > 0),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT unique_job_step UNIQUE(job_id, step_number)
+ALTER TABLE challenges ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public challenges read" ON challenges FOR SELECT USING (true);
+CREATE POLICY "Admin challenges write" ON challenges FOR INSERT WITH CHECK (true);
+CREATE POLICY "Admin challenges update" ON challenges FOR UPDATE USING (true);
+CREATE POLICY "Admin challenges delete" ON challenges FOR DELETE USING (true);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 4. Challenge Submissions Table
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS challenge_submissions (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    challenge_id        UUID REFERENCES challenges(id) ON DELETE CASCADE,
+    github_username     TEXT NOT NULL,
+    answer              TEXT,
+    time_taken_seconds  INT,
+    xp_earned           INT DEFAULT 0,
+    submitted_at        TIMESTAMPTZ DEFAULT now()
 );
 
--- 5. SIMULATION RUNS TABLE
-CREATE TABLE IF NOT EXISTS public.simulation_runs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
-    run_name VARCHAR(100),
-    algorithm_used VARCHAR(50) NOT NULL CHECK (algorithm_used IN ('FCFS', 'SPT', 'Priority', 'CP-SAT')),
-    makespan FLOAT NOT NULL,
-    avg_flow_time FLOAT NOT NULL,
-    total_idle_time FLOAT DEFAULT 0,
-    machine_utilization JSONB NOT NULL DEFAULT '{}',
-    schedule_logs JSONB NOT NULL DEFAULT '[]',
-    bottleneck_machine_id VARCHAR(100),
-    disruptions JSONB DEFAULT '[]',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+ALTER TABLE challenge_submissions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public submissions read" ON challenge_submissions FOR SELECT USING (true);
+CREATE POLICY "Public submissions write" ON challenge_submissions FOR INSERT WITH CHECK (true);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 5. Realtime publication (enable realtime for all tables)
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Run in Supabase: Realtime -> Tables -> enable candidates, job_drops, challenges
+
+-- Remove old fake sample data if schema.sql was run before
+DELETE FROM users WHERE email LIKE '%@devrank.io' OR email = 'recruiter@techcorp.com';
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 6. Add AI columns to candidates (safe — IF NOT EXISTS)
+-- Run this in Supabase SQL editor if you already ran schema.sql before
+-- ──────────────────────────────────────────────────────────────────────────────
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS extracted_profile  JSONB DEFAULT '{}';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS skill_scores       JSONB DEFAULT '{}';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ats_score          INT   DEFAULT 0;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS contributions_data JSONB DEFAULT '{}';
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 7. Disable RLS or Grant DELETE permissions for Candidates
+-- Run this in Supabase SQL Editor so DELETE FROM candidates works!
+-- ──────────────────────────────────────────────────────────────────────────────
+ALTER TABLE candidates DISABLE ROW LEVEL SECURITY;
+GRANT ALL ON candidates TO anon, authenticated, service_role;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 8. Real-World 1v1 Battle Matches Table & Admin Approval Queue
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS battle_matches (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    challenger_username  TEXT NOT NULL,
+    opponent_username    TEXT NOT NULL,
+    title                TEXT DEFAULT '1v1 Developer Battle Match',
+    problem_statement    TEXT DEFAULT '',
+    starter_code         TEXT DEFAULT '',
+    status               TEXT DEFAULT 'pending_admin_approval',
+    winner_username      TEXT,
+    created_at           TIMESTAMPTZ DEFAULT now()
 );
 
--- ============================================================
--- Row Level Security (RLS) Policies
--- ============================================================
+ALTER TABLE battle_matches DISABLE ROW LEVEL SECURITY;
+GRANT ALL ON battle_matches TO anon, authenticated, service_role;
 
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.machines ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.job_operations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.simulation_runs ENABLE ROW LEVEL SECURITY;
 
--- Users: can only see/edit their own profile
-CREATE POLICY "Users can view own profile" ON public.users
-    FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON public.users
-    FOR UPDATE USING (auth.uid() = id);
+-- To completely wipe all test profiles right now, run in Supabase SQL Editor:
+-- TRUNCATE TABLE candidates CASCADE;
 
--- Machines: users manage their own machines
-CREATE POLICY "Users manage own machines" ON public.machines
-    FOR ALL USING (auth.uid() = user_id);
-
--- Jobs: users manage their own jobs
-CREATE POLICY "Users manage own jobs" ON public.jobs
-    FOR ALL USING (auth.uid() = user_id);
-
--- Job Operations: accessible if the parent job belongs to the user
-CREATE POLICY "Users manage own job operations" ON public.job_operations
-    FOR ALL USING (
-        EXISTS (
-            SELECT 1 FROM public.jobs
-            WHERE jobs.id = job_operations.job_id
-            AND jobs.user_id = auth.uid()
-        )
-    );
-
--- Simulation Runs: users see their own runs
-CREATE POLICY "Users manage own simulation runs" ON public.simulation_runs
-    FOR ALL USING (auth.uid() = user_id);
-
--- Managers can view all simulation runs (role-based)
-CREATE POLICY "Managers view all simulation runs" ON public.simulation_runs
-    FOR SELECT USING (
-        EXISTS (
-            SELECT 1 FROM public.users
-            WHERE users.id = auth.uid()
-            AND users.role = 'Manager'
-        )
-    );
-
--- ============================================================
--- Auto-create user profile on sign-up trigger
--- ============================================================
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO public.users (id, email, full_name, role)
-    VALUES (
-        NEW.id,
-        NEW.email,
-        COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-        COALESCE(NEW.raw_user_meta_data->>'role', 'Planner')
-    )
-    ON CONFLICT (id) DO NOTHING;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-    AFTER INSERT ON auth.users
-    FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
-
--- ============================================================
--- Indexes for performance
--- ============================================================
-CREATE INDEX IF NOT EXISTS idx_machines_user_id ON public.machines(user_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON public.jobs(user_id);
-CREATE INDEX IF NOT EXISTS idx_job_operations_job_id ON public.job_operations(job_id);
-CREATE INDEX IF NOT EXISTS idx_simulation_runs_user_id ON public.simulation_runs(user_id);
-CREATE INDEX IF NOT EXISTS idx_simulation_runs_created_at ON public.simulation_runs(created_at DESC);

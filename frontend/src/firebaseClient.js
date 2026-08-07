@@ -1,5 +1,9 @@
-import { initializeApp } from 'firebase/app';
-import { getAnalytics, isSupported } from 'firebase/analytics';
+// Firebase Client — DevRank Platform
+// Uses Firebase Firestore for real-time cloud persistence & Firebase Auth for sessions
+
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -11,18 +15,9 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-let app = null;
-let analytics = null;
+// Prevent duplicate initialization in HMR
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
-try {
-  app = initializeApp(firebaseConfig);
-  isSupported().then((supported) => {
-    if (supported) {
-      analytics = getAnalytics(app);
-    }
-  });
-} catch (err) {
-  console.warn('[Firebase] Init failed:', err.message);
-}
-
-export { app, analytics };
+export const db = getFirestore(app);
+export const auth = getAuth(app);
+export default app;

@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Candidates collection: public read, write allowed (no auth yet)
+    match /candidates/{githubUsername} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Job drops collection: public read, write allowed
+    match /job_drops/{jobId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}
